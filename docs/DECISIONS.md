@@ -36,3 +36,7 @@ Agents append here via the `/new-feature` skill; you append here by hand.
 - Successfully computed the maximum absolute residual using numpy.linalg.lstsq on the raw CSV: 9.212e-12, confirming that casual and registered reconstruct cnt to floating-point precision.
 - Decision: Treat unexpectedly high performance as a potential leakage warning and require numerical verification before accepting modeling results.
 - Repository setup note: The initial starter commit was created retrospectively after tutorial Steps 2 and 3. I extracted a fresh copy of the original ZIP, compared it against my working project, committed the unmodified starter, and restored my tutorial notes.
+
+## Step 4 — Rolling Standard Deviation (2026-11-24)
+
+- Added cnt_roll_std_7 using shift(1) before rolling(7). All seven previous daily counts are available at prediction time. Existing seven-day warmup is sufficient. Validation R^2 improved for ridge from 0.6475 to 0.7224 (+0.0749) but declined for hgb from 0.2185 to 0.0977 (-0.1208). Retain the feature based on ridge exceeding the 0.01 improvement threshold, while documenting the decline in hgb.
