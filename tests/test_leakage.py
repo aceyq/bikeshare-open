@@ -64,3 +64,19 @@ def test_no_missing_values(feats):
 def test_dates_are_sorted_and_unique(feats):
     assert feats.dteday.is_monotonic_increasing
     assert feats.dteday.is_unique
+
+
+def test_rolling_std_excludes_today(feats):
+    """Rolling std must use only the previous seven calendar days."""
+    assert "cnt_roll_std_7" in feature_columns(feats)
+
+    by_date = load_raw().set_index("dteday")[TARGET]
+    checked = 0
+
+    for date, actual in feats.set_index("dteday")["cnt_roll_std_7"].items():
+        window = [date - pd.Timedelta(days=k) for k in range(1, 8)]
+        expected = by_date.loc[window].std()
+        assert actual == pytest.approx(expected), f"bad rolling std at {date}"
+        checked += 1
+
+    assert checked > 600, "too few rows actually verified"
