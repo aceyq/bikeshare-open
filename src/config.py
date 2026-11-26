@@ -45,6 +45,19 @@ UNVERIFIED_COLS = {"cnt_2d_bfr"}
 # What feature_columns() and the tests actually enforce.
 FORBIDDEN = LEAKAGE_COLS | TIME_INDEX_COLS | UNVERIFIED_COLS
 
+# The date column: the calendar index, never a feature itself.
+DATE_COL = "dteday"
+
+# Raw columns reviewed and allowed as inputs. Every column in the raw CSV must
+# appear in exactly one of: DATE_COL, FORBIDDEN, ALLOWED_RAW_COLS
+# (tests/test_contract.py enforces this). To admit a new raw column, add it
+# here in a reviewed diff after checking it is not a restatement of `cnt`
+# and is known at prediction time.
+ALLOWED_RAW_COLS = {
+    "season", "mnth", "holiday", "weekday", "workday", "weather",
+    "temp", "atemp", "hum", "windspeed",
+}
+
 # Temporal split: train on 2011, validate on H1 2012, test on H2 2012.
 TRAIN_END = "2011-12-31"
 VALID_END = "2012-06-30"

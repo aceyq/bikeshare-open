@@ -506,3 +506,124 @@ Write. It has no view of Bash, and it does not undo anything. In Fault 4 the
 only thing standing between the agent and a write into `data/raw/` was the
 permission layer, whose cause for denying the command is not visible in the
 repository configuration.
+
+## Additional raw-column contract test
+
+Not a seeded fault. Written after Faults 1-4 to close a gap seen in the
+design: `feature_columns()` is a denylist (every numeric column not in
+`FORBIDDEN`), so a new numeric column in the raw CSV would become a model
+feature with no test failing. `REQUIRED_COLS` in `src/ingest.py` only
+checks that columns are present, not that extra ones are rejected.
+
+### Test design
+
+Raw columns are classified explicitly in `src/config.py`. Nothing is
+inferred from dtypes.
+
+```python
+FORBIDDEN = LEAKAGE_COLS | TIME_INDEX_COLS | UNVERIFIED_COLS  # existing
+DATE_COL = "dteday"
+ALLOWED_RAW_COLS = {
+    "season", "mnth", "holiday", "weekday", "workday", "weather",
+    "temp", "atemp", "hum", "windspeed",
+}
+```
+
+Two tests were added to `tests/test_contract.py`:
+
+```python
+def test_every_raw_column_is_explicitly_classified():
+    header = set(pd.read_csv(RAW, nrows=0).columns)
+    unclassified = header - ALLOWED_RAW_COLS - FORBIDDEN - {DATE_COL}
+    assert not unclassified, (
+        f"unclassified raw columns: {sorted(unclassified)}; classify each in "
+        "src/config.py as ALLOWED_RAW_COLS or FORBIDDEN"
+    )
+
+def test_raw_column_classes_are_disjoint():
+    assert not (ALLOWED_RAW_COLS & FORBIDDEN)
+    assert DATE_COL not in ALLOWED_RAW_COLS | FORBIDDEN
+```
+
+The header is read directly from the file with `nrows=0`. A column that is
+in none of the three sets fails the test, whatever its dtype. The
+disjointness test stops a column from being listed in two classes (for
+example `casual` in both) to satisfy the first test. The existing
+`feature_columns()`, the other tests and the hook configuration were not
+changed. The only edit to existing code is the `src.config` import line in
+`tests/test_contract.py`.
+
+### Classification of the 18 raw columns
+
+| Class | Columns |
+|---|---|
+| Date (1) | `dteday` |
+| Forbidden (7) | `casual`, `registered`, `cnt` (leakage); `instant`, `yr`, `days_since_2011` (time index); `cnt_2d_bfr` (unverified) |
+| Allowed raw (10) | `season`, `mnth`, `holiday`, `weekday`, `workday`, `weather`, `temp`, `atemp`, `hum`, `windspeed` |
+
+A script check confirmed that every one of the 18 header columns is in
+exactly one class, that there are no unclassified columns, and that there are
+no stale entries (classified names missing from the CSV).
+
+### Passing output
+
+```
+$ make test
+python -m pytest tests/ -q
+..................                                                       [100%]
+18 passed in 1.39s
+```
+
+The 18 tests are the previous 16 plus the 2 new contract tests.
+
+### Failing output: temporary `leak_proxy` experiment
+
+To show the actual test fails on an unclassified column, a scratch pytest
+file outside the repository (in the session scratchpad) did the following:
+
+1. Read the original raw CSV, without writing to it.
+2. Added a column `leak_proxy = registered * 0.5` and wrote the result to
+   pytest's `tmp_path`, outside `data/raw/`.
+3. Used `monkeypatch.setattr` to point the `RAW` name in the loaded
+   `tests/test_contract.py` module at the temporary CSV.
+4. Called the real `test_every_raw_column_is_explicitly_classified`.
+
+Result:
+
+```
+E       AssertionError: unclassified raw columns: ['leak_proxy']; classify each in src/config.py as ALLOWED_RAW_COLS or FORBIDDEN
+
+tests/test_contract.py:68: AssertionError
+FAILED ...demo_leak_proxy.py::test_contract_fails_on_unclassified_column
+1 failed in 1.06s
+```
+
+The scratch file is not part of the repository and was not committed.
+
+### Original CSV hash
+
+`data/raw/bike_daily.csv` SHA-256 before the changes, after the
+`leak_proxy` experiment, and again just before this commit:
+
+```
+a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc
+```
+
+The hash is unchanged. The original was never modified, even temporarily.
+`data/raw/` still contains only `bike_daily.csv`.
+
+### What this does and does not prove
+
+Explicit classification requires human review. It does not independently
+prove that an approved column is leakage-free.
+
+- The test only forces a person to put each raw column in a class. It cannot
+  tell whether a column is leaky.
+- Someone can add a leaky column to `ALLOWED_RAW_COLS`, and the test will
+  pass. What protects against that is the review of the diff to
+  `src/config.py`, guided by the comment there: check that the column is
+  not a restatement of `cnt` and is known at prediction time.
+- It checks only the raw CSV header. Derived columns built in
+  `build_features` are covered by `tests/test_leakage.py`.
+- `feature_columns()` is still a denylist. A stronger follow-up would make
+  it an allowlist, which was not done here.
