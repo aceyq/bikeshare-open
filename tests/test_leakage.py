@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from src.config import FORBIDDEN, TARGET
-from src.features import build_features, feature_columns
+from src.features import build_features, encode_weather, feature_columns
 from src.ingest import load_raw
 
 
@@ -80,3 +80,11 @@ def test_rolling_std_excludes_today(feats):
         checked += 1
 
     assert checked > 600, "too few rows actually verified"
+
+
+def test_encode_weather_rejects_unknown_label():
+    """An unseen weather label must raise, not become NaN and be silently
+    deleted by a later dropna()."""
+    series = pd.Series(["GOOD", "UNKNOWN"])
+    with pytest.raises(ValueError, match="unmapped weather labels"):
+        encode_weather(series)

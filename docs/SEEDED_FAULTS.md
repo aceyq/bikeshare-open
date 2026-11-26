@@ -169,3 +169,170 @@ equal day shifts.
 The PostToolUse hook detected the faulty edit and reported the failing test,
 but it did not undo it. The faulty line stayed in the file until the agent
 repaired it in a later turn. The hook is a detector, not a rollback.
+
+## Fault 3: weather label validation removed from `encode_weather()`
+
+Unlike Faults 1 and 2, the existing verification suite did not detect this
+fault. It was found, a test was written to close the gap, and the fault was
+then seeded a second time to confirm the strengthened suite catches it.
+
+**File:** `src/features.py`, function `encode_weather()`
+
+**Original code:**
+
+```python
+    known = series.dropna()
+    unknown = set(known.unique()) - set(WEATHER_ORDER)
+    if unknown:
+        raise ValueError(f"unmapped weather labels: {sorted(unknown)}")
+    return series.map(WEATHER_ORDER).astype(float)
+```
+
+**Faulty code (the seeded fault):** only the conditional raise was removed.
+The `known` and `unknown` assignments were left in place, now unused.
+
+```python
+    known = series.dropna()
+    unknown = set(known.unique()) - set(WEATHER_ORDER)
+    return series.map(WEATHER_ORDER).astype(float)
+```
+
+Without the raise, an unseen weather label maps silently to NaN through
+`.map()`, and the later `dropna()` in `build_features` deletes those rows
+with no error or warning. The `encode_weather` docstring describes this
+failure mode.
+
+### Chronology
+
+#### Attempt 1: fault seeded, no detection
+
+1. The `if unknown: raise ValueError(...)` block was removed.
+2. **The PostToolUse hook produced no error.** The edit was accepted silently.
+3. The leakage suite was run explicitly, with the fault in place:
+
+   ```
+   $ python -m pytest tests/test_leakage.py -q
+   ........                                                                 [100%]
+   8 passed in 0.47s
+   ```
+
+   **Original leakage suite: 8 passed in 0.47s despite the fault.**
+
+#### The verification gap
+
+None of the 8 original tests calls `encode_weather()` with an unknown label.
+`build_features` only ever sees the three known labels (`GOOD`, `MISTY`,
+`BAD`) in the real data, so the validation branch was never exercised. The
+suite checked leakage properties, not the encoder's failure behaviour. A
+removed guard that only matters for unexpected input is invisible to tests
+that use only expected input.
+
+#### Gap closed: new synthetic test
+
+`test_encode_weather_rejects_unknown_label` was added to
+`tests/test_leakage.py`, with `encode_weather` added to the existing
+`from src.features import ...` line. The raw dataset and existing tests were
+not touched.
+
+```python
+def test_encode_weather_rejects_unknown_label():
+    """An unseen weather label must raise, not become NaN and be silently
+    deleted by a later dropna()."""
+    series = pd.Series(["GOOD", "UNKNOWN"])
+    with pytest.raises(ValueError, match="unmapped weather labels"):
+        encode_weather(series)
+```
+
+#### Failing output after adding the test (fault still in place)
+
+```
+$ python -m pytest tests/test_leakage.py -q
+........F                                                                [100%]
+=================================== FAILURES ===================================
+__________________ test_encode_weather_rejects_unknown_label ___________________
+
+    def test_encode_weather_rejects_unknown_label():
+        """An unseen weather label must raise, not become NaN and be silently
+        deleted by a later dropna()."""
+        series = pd.Series(["GOOD", "UNKNOWN"])
+>       with pytest.raises(ValueError, match="unmapped weather labels"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_leakage.py:89: Failed
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_encode_weather_rejects_unknown_label - Fai...
+1 failed, 8 passed in 0.66s
+```
+
+#### Successful initial repair
+
+The `if unknown: raise` block was restored, keeping the new test.
+
+```
+$ make test
+python -m pytest tests/ -q
+................                                                         [100%]
+16 passed in 1.36s
+```
+
+`git diff -- src/features.py` was empty. **Agent repair turns for attempt 1: 1**
+(one Edit restoring the block, then `make test` passing).
+
+#### Attempt 2: fault reintroduced, detected by the hook
+
+The same block was removed again, with the new test kept. This time the
+PostToolUse hook detected the fault. Hook:
+`${CLAUDE_PROJECT_DIR}/.claude/hooks/check_leakage.sh`. Stderr, verbatim:
+
+```
+PostToolUse:Edit hook blocking error from command: "${CLAUDE_PROJECT_DIR}/.claude/hooks/check_leakage.sh": [${CLAUDE_PROJECT_DIR}/.claude/hooks/check_leakage.sh]: Leakage tests failed after editing /Users/Acelynn/Downloads/bikeshare-open/src/features.py:
+........F                                                                                                                                                                                                     [100%]
+===================================================================================================== FAILURES ======================================================================================================
+_____________________________________________________________________________________ test_encode_weather_rejects_unknown_label _____________________________________________________________________________________
+
+    def test_encode_weather_rejects_unknown_label():
+        """An unseen weather label must raise, not become NaN and be silently
+        deleted by a later dropna()."""
+        series = pd.Series(["GOOD", "UNKNOWN"])
+>       with pytest.raises(ValueError, match="unmapped weather labels"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ValueError
+
+tests/test_leakage.py:89: Failed
+============================================================================================== short test summary info ==============================================================================================
+FAILED tests/test_leakage.py::test_encode_weather_rejects_unknown_label - Failed: DID NOT RAISE ValueError
+1 failed, 8 passed in 0.66s
+```
+
+#### Final repair
+
+The block was restored a second time.
+
+```
+$ make test
+python -m pytest tests/ -q
+................                                                         [100%]
+16 passed in 1.38s
+```
+
+`git diff -- src/features.py` was empty. **Agent repair turns for attempt 2: 1.**
+
+### Agent repair turns summary
+
+| Attempt | Detected by hook? | Repair turns |
+|---------|-------------------|--------------|
+| 1 (original suite) | No | 1 |
+| 2 (strengthened suite) | Yes | 1 |
+
+Attempt 1 also needed one extra turn to add the test, which is test work and
+not a repair.
+
+### Observation: detection without remediation
+
+The hook detected the fault only after the tests were strengthened. Its
+detection power is exactly the power of the tests it runs: with the original
+8 tests it was silent, and with the new test it blocked the edit. Even when it
+detected the fault, it did not undo the edit. The faulty code stayed in
+`src/features.py` until the agent restored it in a later turn. The hook is a
+detector, not a rollback.
