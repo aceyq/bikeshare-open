@@ -40,3 +40,10 @@ Agents append here via the `/new-feature` skill; you append here by hand.
 ## Step 4 — Rolling Standard Deviation (2026-11-24)
 
 - Added cnt_roll_std_7 using shift(1) before rolling(7). All seven previous daily counts are available at prediction time. Existing seven-day warmup is sufficient. Validation R^2 improved for ridge from 0.6475 to 0.7224 (+0.0749) but declined for hgb from 0.2185 to 0.0977 (-0.1208). Retain the feature based on ridge exceeding the 0.01 improvement threshold, while documenting the decline in hgb.
+
+## Process updates (2026-11-25)
+
+- **Mandatory approval pause in `/seed-fault`.** The skill now stops after capturing the fault and test evidence and waits for explicit user approval before repairing. Rationale: the experiments needed the failure recorded while the fault was still in the working tree, and the hook only detects an edit and does not undo it, so repairing automatically would remove the state being studied. The pause is not counted as a repair turn.
+- **`cnt_roll_std_7` rule added to `CLAUDE.md`.** The feature must use only the previous seven calendar days (`.shift(1)` before `.rolling(LAG_WARMUP).std()` on the gap-free index). Rationale: it was added in Step 4 with its own test, but the standing rules only named lag and rolling features in general, so the specific guarantee and its test were not written down where a future edit would see them.
+- **Explicit raw-column classification rule added to `CLAUDE.md`.** New raw columns must be classified in `src/config.py` as `DATE_COL`, `FORBIDDEN`, or `ALLOWED_RAW_COLS`, enforced by `tests/test_contract.py`. Rationale: `feature_columns()` is a denylist, so an unclassified numeric column would become a feature with no test failing. Classification requires human review and does not itself prove an approved column is leakage-free.
+- **`/seed-fault` and `/new-feature` listed in `CLAUDE.md`.** Rationale: so the skills and their intended use are visible in the standing project instructions. `/seed-fault` is for testing the verification suite, not for making real changes.

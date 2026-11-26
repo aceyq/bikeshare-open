@@ -627,3 +627,190 @@ prove that an approved column is leakage-free.
   `build_features` are covered by `tests/test_leakage.py`.
 - `feature_columns()` is still a denylist. A stronger follow-up would make
   it an allowlist, which was not done here.
+
+## Fault 5: `.shift(1)` removed from `cnt_roll_std_7` (additional custom skill verification)
+
+Additional custom skill verification. This fault was seeded by invoking the
+new `/seed-fault` skill (`.claude/skills/seed-fault/SKILL.md`) with the
+argument "Remove .shift(1) from cnt_roll_std_7 in src/features.py so the
+rolling standard deviation incorrectly includes today's demand." It checks
+that the skill's workflow, including the mandatory approval pause, runs as
+written. It is not one of the original Exercise 2 faults.
+
+**File:** `src/features.py`, function `build_features()`, line 77
+
+**Original line:**
+
+```python
+    out["cnt_roll_std_7"] = out[TARGET].shift(1).rolling(LAG_WARMUP).std()
+```
+
+**Faulty line (the seeded fault):**
+
+```python
+    out["cnt_roll_std_7"] = out[TARGET].rolling(LAG_WARMUP).std()
+```
+
+Only this line changed. `cnt_roll_7`, the other features and the tests were
+untouched.
+
+### Baseline (step 1)
+
+```
+$ git status --short
+ M .claude/settings.json
+ M CLAUDE.md
+ M docs/DECISIONS.md
+?? .claude/skills/seed-fault/
+
+$ make test
+python -m pytest tests/ -q
+..................                                                       [100%]
+18 passed in 1.64s
+```
+
+`src/features.py` had no uncommitted changes. The other uncommitted files
+were not part of this experiment. Raw CSV SHA-256 before:
+`a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc`.
+
+### PostToolUse hook stderr (verbatim)
+
+Hook: `${CLAUDE_PROJECT_DIR}/.claude/hooks/check_leakage.sh`, triggered by the Edit tool.
+
+```
+PostToolUse:Edit hook blocking error from command: "${CLAUDE_PROJECT_DIR}/.claude/hooks/check_leakage.sh": [${CLAUDE_PROJECT_DIR}/.claude/hooks/check_leakage.sh]: Leakage tests failed after editing /Users/Acelynn/Downloads/bikeshare-open/src/features.py:
+        assert "cnt_roll_std_7" in feature_columns(feats)
+    
+        by_date = load_raw().set_index("dteday")[TARGET]
+        checked = 0
+    
+        for date, actual in feats.set_index("dteday")["cnt_roll_std_7"].items():
+            window = [date - pd.Timedelta(days=k) for k in range(1, 8)]
+            expected = by_date.loc[window].std()
+>           assert actual == pytest.approx(expected), f"bad rolling std at {date}"
+E           AssertionError: bad rolling std at 2011-01-10 00:00:00
+E           assert 324.1362882081137 == 324.0354918832195 ± 3.2e-04
+E             
+E             comparison failed
+E             Obtained: 324.1362882081137
+E             Expected: 324.0354918832195 ± 3.2e-04
+
+tests/test_leakage.py:79: AssertionError
+============================================================================================== short test summary info ==============================================================================================
+FAILED tests/test_leakage.py::test_rolling_std_excludes_today - AssertionError: bad rolling std at 2011-01-10 00:00:00
+1 failed, 8 passed in 0.31s
+```
+
+The hook shows only the last 20 lines of pytest output (`tail -20` in the
+script), which is why the traceback starts partway through the test.
+
+### Failing test output (direct run, fault still in place)
+
+Run during the approval pause:
+
+```
+$ python -m pytest tests/test_leakage.py -q
+.......F.                                                                [100%]
+=================================== FAILURES ===================================
+_______________________ test_rolling_std_excludes_today ________________________
+
+feats =         dteday  instant  season  ...  cnt_lag_7   cnt_roll_7 cnt_roll_std_7
+0   2011-01-10     10.0  WINTER  ...     1...857     887.135250
+713 2012-12-31    731.0  WINTER  ...      920.0  1531.428571     941.177353
+
+[714 rows x 29 columns]
+
+    def test_rolling_std_excludes_today(feats):
+        """Rolling std must use only the previous seven calendar days."""
+        assert "cnt_roll_std_7" in feature_columns(feats)
+
+        by_date = load_raw().set_index("dteday")[TARGET]
+        checked = 0
+
+        for date, actual in feats.set_index("dteday")["cnt_roll_std_7"].items():
+            window = [date - pd.Timedelta(days=k) for k in range(1, 8)]
+            expected = by_date.loc[window].std()
+>           assert actual == pytest.approx(expected), f"bad rolling std at {date}"
+E           AssertionError: bad rolling std at 2011-01-10 00:00:00
+E           assert 324.1362882081137 == 324.0354918832195 ± 3.2e-04
+E             
+E             comparison failed
+E             Obtained: 324.1362882081137
+E             Expected: 324.0354918832195 ± 3.2e-04
+
+tests/test_leakage.py:79: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_rolling_std_excludes_today - AssertionErro...
+1 failed, 8 passed in 0.51s
+```
+
+The test failed at the first row it checks, 2011-01-10. Obtained
+`324.1362882081137`, expected `324.0354918832195 ± 3.2e-04`. No test was added
+or changed: the existing `test_rolling_std_excludes_today` detected the
+fault. Whitespace on blank lines in the pasted block may differ from the
+raw terminal output.
+
+### Discrepancy: "7 passed" vs "8 passed"
+
+During the approval pause, the agent's summary quoted the hook's result line
+as `1 failed, 7 passed` while also saying `1 failed, 8 passed`. This was an
+error by the agent, not a difference between the hook and a direct run.
+
+- The hook's actual last line was `1 failed, 8 passed in 0.31s`.
+- The agent's first write-up of the hook stderr wrongly said
+  `1 failed, 7 passed in 0.31s`, and then described a mismatch that did not
+  exist.
+- `tests/test_leakage.py` now collects 9 tests (8 original plus
+  `test_encode_weather_rejects_unknown_label`), so `1 failed, 8 passed` is
+  correct. The earlier faults 1 and 2 reported 7 passed because the file then
+  had 8 tests.
+- The hook and the direct run differ only in time (0.31s and 0.51s).
+
+No existing tests were changed to resolve the discrepancy.
+
+### Approval pause
+
+After capturing the evidence, the skill stopped with the fault still in the
+working tree and asked for approval (step 6). The user approved the repair
+and asked first for the direct run above.
+
+### Successful repair
+
+`.shift(1)` was restored with the Edit tool, then `make test`:
+
+```
+$ make test
+python -m pytest tests/ -q
+..................                                                       [100%]
+18 passed in 1.87s
+```
+
+`git diff -- src/features.py` was empty. Raw CSV SHA-256 after:
+`a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc`
+(unchanged, and `data/raw/` still contains only `bike_daily.csv`).
+
+### Agent repair turns
+
+1. **Repair turns: 1.** The restore Edit and the passing `make test` happened
+   in the one turn after approval. In the same turn the agent first ran the
+   requested direct test run and investigated the discrepancy; that
+   verification was not repair work.
+2. The seeding turn (baseline, edit, evidence capture) was separate and is
+   not counted as repair.
+
+### Why removing `shift(1)` causes temporal leakage
+
+`rolling(7).std()` on its own covers rows t-6 through t, so the window
+includes the current day's `cnt`, the target being predicted. The feature
+then carries part of the answer, and validation and test scores look better
+than a real forecast could achieve. `.shift(1)` moves the series back one day
+first, so the window covers t-7 through t-1 only. This matches the rule in
+`CLAUDE.md` and the Fault 2 explanation for `cnt_roll_7`.
+
+### Observation: detection without remediation
+
+The PostToolUse hook detected the faulty edit and reported the failing test,
+but it did not undo it. The faulty line stayed in `src/features.py` until the
+agent restored it after approval. The hook is a detector, not a rollback.
+Here, unlike Fault 3, the existing suite already covered the behaviour, so
+the hook fired on the first attempt.

@@ -23,6 +23,22 @@ rides) from calendar, weather, and lagged-demand features.
 - Report the mean baseline **and** the persistence baseline (yesterday's
   count) alongside every model. A negative R^2 is a finding, not a bug
   to hide.
+- `cnt_roll_std_7` must use only the previous seven calendar days:
+  `.shift(1)` first, then `.rolling(LAG_WARMUP).std()`, on the gap-free
+  index. `test_rolling_std_excludes_today` guards it; never weaken it.
+- Every raw CSV column must be explicitly classified in `src/config.py`:
+  `DATE_COL`, `FORBIDDEN`, or `ALLOWED_RAW_COLS`. Never infer it from
+  dtype. `tests/test_contract.py` fails on an unclassified column. Adding
+  to `ALLOWED_RAW_COLS` needs a human leakage review: not a restatement of
+  `cnt`, and known at prediction time.
+
+## Skills
+- `/seed-fault <fault>` - fault-injection experiment. Seeds one fault with
+  Edit so the hook runs, captures the evidence, **pauses for your explicit
+  approval**, repairs, verifies, and appends to `docs/SEEDED_FAULTS.md`.
+  Use it to test whether the suite and hook catch a fault, never to make a
+  real change. It does not commit.
+- `/new-feature <feature>` - add a predictor with its leakage test.
 
 ## Style
 - Standard library, pandas, scikit-learn only. No new dependencies
