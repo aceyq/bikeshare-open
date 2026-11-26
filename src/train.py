@@ -15,10 +15,12 @@ reason it fails is the headline result.
 
 Run: python -m src.train
 """
+import argparse
 import json
 
+import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, RegressorMixin
+from sklearn.base import BaseEstimator, RegressorMixin, clone
 from sklearn.dummy import DummyRegressor
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.linear_model import Ridge
@@ -26,7 +28,7 @@ from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from src.config import METRICS, PROCESSED, TARGET, TRAIN_END, VALID_END
+from src.config import EXPERIMENTS_DIR, METRICS, PROCESSED, TARGET, TRAIN_END, VALID_END
 from src.features import feature_columns
 
 
@@ -43,6 +45,31 @@ class PersistenceBaseline(BaseEstimator, RegressorMixin):
 
     def predict(self, X):
         return X[self.column].to_numpy(dtype=float)
+
+
+class LagDifferenceRegressor(BaseEstimator, RegressorMixin):
+    """Fit `estimator` on cnt - cnt_lag_1; predict by adding cnt_lag_1 back.
+
+    The lag is read from the existing column of the same row, never
+    recomputed with .diff()/.shift(): rows after the 2011-03-10 gap were
+    dropped, so a row-wise difference there would span more than one day.
+    A wrapped model that always predicts 0 reproduces the persistence
+    baseline exactly. Predictions are on the original count scale.
+    """
+
+    def __init__(self, estimator, lag_column: str = "cnt_lag_1"):
+        self.estimator = estimator
+        self.lag_column = lag_column
+
+    def fit(self, X, y):
+        if self.lag_column not in X.columns:
+            raise ValueError(f"difference target needs column {self.lag_column!r}")
+        delta = np.asarray(y, dtype=float) - X[self.lag_column].to_numpy(dtype=float)
+        self.estimator_ = clone(self.estimator).fit(X, delta)
+        return self
+
+    def predict(self, X):
+        return self.estimator_.predict(X) + X[self.lag_column].to_numpy(dtype=float)
 
 
 MODELS = {
@@ -62,32 +89,73 @@ def temporal_split(df: pd.DataFrame):
     return train, valid, test
 
 
-def fit_and_score() -> dict:
+def fit_and_score(delta_hgb: bool = False, splits: tuple = ("valid", "test")) -> dict:
+    """Fit on train and score the requested splits, on the original count scale.
+
+    With the defaults this is the standard pipeline. `delta_hgb` adds
+    `hgb_delta`: the same booster (cloned from MODELS["hgb"]) fit on
+    cnt - cnt_lag_1. A split not listed in `splits` is never predicted.
+    """
     df = pd.read_parquet(PROCESSED)
     cols = feature_columns(df)
     train, valid, test = temporal_split(df)
+    scored = {name: part for name, part in [("valid", valid), ("test", test)] if name in splits}
 
     results = {
         "n_features": len(cols),
         "features": cols,
         "n_train": len(train),
-        "n_valid": len(valid),
-        "n_test": len(test),
     }
-    for name, model in MODELS.items():
+    for split, part in scored.items():
+        results[f"n_{split}"] = len(part)
+
+    models = dict(MODELS)
+    if delta_hgb:
+        models["hgb_delta"] = LagDifferenceRegressor(clone(MODELS["hgb"]))
+    for name, model in models.items():
         model.fit(train[cols], train[TARGET])
-        results[name] = {
-            split: {
-                "r2": round(float(r2_score(part[TARGET], model.predict(part[cols]))), 4),
-                "mae": round(float(mean_absolute_error(part[TARGET], model.predict(part[cols]))), 1),
+        results[name] = {}
+        for split, part in scored.items():
+            pred = model.predict(part[cols])
+            results[name][split] = {
+                "r2": round(float(r2_score(part[TARGET], pred)), 4),
+                "mae": round(float(mean_absolute_error(part[TARGET], pred)), 1),
             }
-            for split, part in [("valid", valid), ("test", test)]
-        }
     return results
 
 
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Fit, score, and write metrics.")
+    parser.add_argument("--delta-hgb", action="store_true",
+                        help="also fit hgb on cnt - cnt_lag_1 (experiment; needs --valid-only or --final-test)")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--valid-only", action="store_true",
+                      help="score validation only; test rows are never predicted")
+    mode.add_argument("--final-test", action="store_true",
+                      help="score test once, after the decision is recorded")
+    args = parser.parse_args(argv)
+    if args.delta_hgb and not (args.valid_only or args.final_test):
+        parser.error("--delta-hgb requires an explicit --valid-only or --final-test")
+    if (args.valid_only or args.final_test) and not args.delta_hgb:
+        parser.error("--valid-only/--final-test only apply together with --delta-hgb")
+    return args
+
+
 if __name__ == "__main__":
-    res = fit_and_score()
-    METRICS.parent.mkdir(parents=True, exist_ok=True)
-    METRICS.write_text(json.dumps(res, indent=2))
+    args = _parse_args()
+    if not args.delta_hgb:
+        res = fit_and_score()
+        METRICS.parent.mkdir(parents=True, exist_ok=True)
+        METRICS.write_text(json.dumps(res, indent=2))
+    else:
+        split = "valid" if args.valid_only else "test"
+        out = EXPERIMENTS_DIR / f"hgb_delta_{split}.json"
+        if split == "test":
+            if not (EXPERIMENTS_DIR / "hgb_delta_valid.json").exists():
+                raise SystemExit("refusing --final-test: no validation run recorded yet")
+            if out.exists():
+                raise SystemExit(f"refusing --final-test: {out.name} exists; test is scored once")
+        res = fit_and_score(delta_hgb=True, splits=(split,))
+        EXPERIMENTS_DIR.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(res, indent=2))
     print(json.dumps({k: v for k, v in res.items() if k != "features"}, indent=2))

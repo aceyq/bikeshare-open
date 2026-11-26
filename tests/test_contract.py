@@ -1,12 +1,22 @@
 """Guard rails on the ingest contract and the trained model's behaviour."""
+import numpy as np
 import pandas as pd
 import pytest
+from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.metrics import r2_score
 
-from src.config import ALLOWED_RAW_COLS, DATE_COL, FORBIDDEN, LAG_WARMUP, RAW, TARGET
+import src.train as train_mod
+from src.config import ALLOWED_RAW_COLS, DATE_COL, FORBIDDEN, LAG_WARMUP, RAW, TARGET, VALID_END
 from src.features import build_features, feature_columns, reindex_to_calendar
 from src.ingest import load_raw
-from src.train import MODELS, temporal_split
+from src.train import (
+    MODELS,
+    LagDifferenceRegressor,
+    PersistenceBaseline,
+    _parse_args,
+    fit_and_score,
+    temporal_split,
+)
 
 
 @pytest.fixture(scope="module")
@@ -75,3 +85,61 @@ def test_raw_column_classes_are_disjoint():
     """A column in two classes (e.g. `casual` in both) defeats the check."""
     assert not (ALLOWED_RAW_COLS & FORBIDDEN)
     assert DATE_COL not in ALLOWED_RAW_COLS | FORBIDDEN
+
+
+class _ConstantDelta(BaseEstimator, RegressorMixin):
+    """Synthetic inner model: predicts a constant and records the y it saw."""
+
+    def __init__(self, shift=0.0):
+        self.shift = shift
+
+    def fit(self, X, y):
+        self.fit_y_ = np.asarray(y, dtype=float)
+        return self
+
+    def predict(self, X):
+        return np.full(len(X), self.shift)
+
+
+def test_lag_difference_wrapper_with_zero_model_equals_persistence():
+    """A model that predicts a zero difference must be exactly persistence."""
+    X = pd.DataFrame({"cnt_lag_1": [100.0, 250.0, 175.0], "other": [1.0, 2.0, 3.0]})
+    y = pd.Series([110.0, 240.0, 200.0])
+    wrapped = LagDifferenceRegressor(_ConstantDelta(shift=0.0)).fit(X, y)
+    persistence = PersistenceBaseline("cnt_lag_1").fit(X)
+    assert wrapped.predict(X) == pytest.approx(persistence.predict(X))
+
+
+def test_lag_difference_wrapper_fits_on_the_difference():
+    """The inner model sees cnt - cnt_lag_1 and predictions add the lag back."""
+    X = pd.DataFrame({"cnt_lag_1": [100.0, 250.0, 175.0]})
+    y = pd.Series([110.0, 240.0, 200.0])
+    inner = _ConstantDelta(shift=5.0)
+    wrapped = LagDifferenceRegressor(inner).fit(X, y)
+    assert wrapped.estimator_.fit_y_ == pytest.approx([10.0, -10.0, 25.0])
+    assert wrapped.predict(X) == pytest.approx([105.0, 255.0, 180.0])
+    assert not hasattr(inner, "fit_y_"), "the passed estimator must not be fitted in place"
+
+
+def test_default_models_are_unchanged():
+    assert list(MODELS) == ["baseline_mean", "baseline_persistence", "ridge", "hgb"]
+
+
+def test_delta_flag_requires_explicit_split():
+    with pytest.raises(SystemExit):
+        _parse_args(["--delta-hgb"])
+    with pytest.raises(SystemExit):
+        _parse_args(["--valid-only"])
+    assert _parse_args(["--delta-hgb", "--valid-only"]).valid_only
+    assert _parse_args(["--delta-hgb", "--final-test"]).final_test
+
+
+def test_valid_only_run_never_scores_test(feats, tmp_path, monkeypatch):
+    """Runs on train + validation rows only (no test rows are even present)."""
+    path = tmp_path / "features.parquet"
+    feats[feats.dteday <= VALID_END].to_parquet(path, index=False)
+    monkeypatch.setattr(train_mod, "PROCESSED", path)
+    res = fit_and_score(delta_hgb=True, splits=("valid",))
+    assert "n_test" not in res
+    for name in ("baseline_mean", "baseline_persistence", "ridge", "hgb", "hgb_delta"):
+        assert set(res[name]) == {"valid"}

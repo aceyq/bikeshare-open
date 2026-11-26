@@ -47,3 +47,34 @@ Agents append here via the `/new-feature` skill; you append here by hand.
 - **`cnt_roll_std_7` rule added to `CLAUDE.md`.** The feature must use only the previous seven calendar days (`.shift(1)` before `.rolling(LAG_WARMUP).std()` on the gap-free index). Rationale: it was added in Step 4 with its own test, but the standing rules only named lag and rolling features in general, so the specific guarantee and its test were not written down where a future edit would see them.
 - **Explicit raw-column classification rule added to `CLAUDE.md`.** New raw columns must be classified in `src/config.py` as `DATE_COL`, `FORBIDDEN`, or `ALLOWED_RAW_COLS`, enforced by `tests/test_contract.py`. Rationale: `feature_columns()` is a denylist, so an unclassified numeric column would become a feature with no test failing. Classification requires human review and does not itself prove an approved column is leakage-free.
 - **`/seed-fault` and `/new-feature` listed in `CLAUDE.md`.** Rationale: so the skills and their intended use are visible in the standing project instructions. `/seed-fault` is for testing the verification suite, not for making real changes.
+
+## Exercise 4 — Target transformation: hgb_delta (2026-11-25)
+
+- Experiment: fit the existing booster on `cnt - cnt_lag_1` and reconstruct predictions as `cnt_lag_1 + predicted difference` (`LagDifferenceRegressor` in `src/train.py`, behind `--delta-hgb`; the default pipeline and `MODELS` are unchanged). Features, temporal splits, hyperparameters and the random seed are unchanged (the booster is cloned from `MODELS["hgb"]`). All metrics are on the original count scale. No leakage: the lag is the same-row `cnt_lag_1` column, known at prediction time.
+- Acceptance criteria, fixed before the validation run: `hgb_delta` must (1) beat persistence on validation MAE and (2) improve validation R^2 over untransformed `hgb` by more than 0.01. Its validation R^2 and MAE are also compared with ridge to judge whether it is competitive.
+- Actual validation results (`python -m src.train --delta-hgb --valid-only`, 182 validation days, saved in `reports/experiments/hgb_delta_valid.json`): hgb_delta R^2 0.5642 / MAE 885.8; hgb 0.0977 / 1381.6; persistence 0.4507 / 900.6; ridge 0.7224 / 700.4; mean baseline -0.9318 / 2002.2. hgb_delta vs hgb: R^2 +0.4665, MAE -495.8. vs persistence: R^2 +0.1135, MAE -14.8. vs ridge: R^2 -0.1582, MAE +185.4.
+- Criteria check: both criteria are met. (1) 885.8 < 900.6. (2) +0.4665 > 0.01.
+- Decision: adopt `hgb_delta` as an experimental model for Exercise 4. Ridge remains the strongest model on validation and is retained as the best model; `hgb_delta` is not competitive with it (lower R^2 by 0.158, higher MAE by 185).
+- Rationale: differencing removes the 2011-to-2012 growth trend from the target, so the booster no longer has to predict counts above its 2011 training range; the lag carries the current level. This turns the booster from the worst model on validation into one that is slightly better than persistence.
+- Caveat: the MAE improvement over persistence is small (14.8, about 1.6%). Statistical significance has not been established, and no interval was computed on 182 days. The larger R^2 gain over `hgb` is the stronger evidence. No tuning or iteration was done on validation: one run with fixed settings.
+- Test protocol: the test set is scored once with `python -m src.train --delta-hgb --final-test`, after this entry. Results are saved separately in `reports/experiments/hgb_delta_test.json`; `reports/metrics.json` is not overwritten. The model will not be tuned or changed based on test results.
+
+## Exercise 4 — Final test results and interpretation (2026-11-25)
+
+The original validation-based adoption decision above is unchanged. This entry records what happened when the test set was scored once, with `python -m src.train --delta-hgb --final-test` (184 test days; saved in `reports/experiments/hgb_delta_test.json`). Nothing was tuned or modified after seeing these numbers, and the command was not re-run.
+
+| Model | Test R^2 | Test MAE |
+|---|---|---|
+| baseline_mean | -2.1441 | 2847.7 |
+| baseline_persistence | 0.5099 | 840.1 |
+| ridge | 0.6356 | 840.3 |
+| hgb | -0.6959 | 2108.4 |
+| hgb_delta | 0.4761 | 990.5 |
+
+- hgb_delta vs hgb: R^2 +1.1720, MAE -1117.9. vs persistence: R^2 -0.0338, MAE +150.4. vs ridge: R^2 -0.1595, MAE +150.2.
+- Interpretation: differencing the target substantially improved the booster. Test R^2 went from -0.6959 to 0.4761 and MAE fell by about 1118, consistent with the explanation that a tree cannot predict counts above its 2011 training range while the difference target removes that growth trend.
+- It did not outperform persistence on the held-out test set. It was worse on both R^2 (0.4761 vs 0.5099) and MAE (990.5 vs 840.1). The validation MAE edge over persistence (14.8, about 1.6%) did not hold on test, which fits the caveat recorded with the adoption decision that its significance was not established. Under the pre-set criteria, the first criterion (beat persistence on MAE) was met on validation and not met on test.
+- Ridge remains the strongest model on validation and by test R^2. Its test MAE (840.3) is essentially tied with persistence (840.1); its advantage on test is in R^2.
+- Decision: retain `hgb_delta` as an optional experimental model behind `--delta-hgb`, not a replacement for the default models. The default pipeline, `MODELS` and `reports/metrics.json` are unchanged. `hgb_delta` should not be presented as an improvement over persistence.
+- Consistency check: the untransformed models in `reports/metrics.json` (baseline_mean, baseline_persistence, ridge, hgb) match the same models in `reports/experiments/hgb_delta_valid.json` and `hgb_delta_test.json` exactly, for R^2 and MAE on both splits, with the same feature list and split sizes (n_features 15, n_train 348, n_valid 182, n_test 184). `reports/metrics.json` has no `hgb_delta` entry, as intended.
+- Repository: `.gitignore` no longer ignores `reports/` or `audit.jsonl`, so `reports/metrics.json`, `reports/experiments/` and the future `reports/audit.jsonl` can be tracked. Exclusions for processed data, virtual environments and caches are kept.
