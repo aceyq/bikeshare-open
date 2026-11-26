@@ -818,3 +818,40 @@ first, so the window covers t-7 through t-1 only. This matches the rule in
 ### Observation: detection without remediation
 
 The hook detected the edit but did not undo it; the faulty line stayed in `src/features.py` until it was restored after approval. Unlike Fault 3, the existing suite already covered this behaviour, so the hook fired on the first attempt.
+
+## Original failing feature test: `cnt_roll_std_7` (before implementation)
+
+Not a seeded fault. Before `cnt_roll_std_7` was implemented, the test `test_rolling_std_excludes_today` was added to `tests/test_leakage.py` and run to confirm it failed for the right reason. This was commit `6ca2159` (2026-11-24, "Add failing test for seven-day rolling demand standard deviation"), which also saved the output below as `docs/feature-test-before.txt`. The feature was implemented afterwards, in commit `cfbdf37`.
+
+The test fails at its first assertion: `cnt_roll_std_7` is not in `feature_columns(feats)`, because the feature does not exist yet (the table has 28 columns). The output is copied verbatim from `docs/feature-test-before.txt`:
+
+```
+============================= test session starts ==============================
+platform darwin -- Python 3.14.6, pytest-9.1.1, pluggy-1.7.0 -- /Users/Acelynn/Downloads/bikeshare-open/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/Acelynn/Downloads/bikeshare-open
+plugins: anyio-4.16.0
+collecting ... collected 8 items / 7 deselected / 1 selected
+
+tests/test_leakage.py::test_rolling_std_excludes_today FAILED            [100%]
+
+=================================== FAILURES ===================================
+_______________________ test_rolling_std_excludes_today ________________________
+
+feats =         dteday  instant  season  ...  cnt_lag_1 cnt_lag_7   cnt_roll_7
+0   2011-01-10     10.0  WINTER  ...      822.0...    1787.0  1530.142857
+713 2012-12-31    731.0  WINTER  ...     1796.0     920.0  1531.428571
+
+[714 rows x 28 columns]
+
+    def test_rolling_std_excludes_today(feats):
+        """Rolling std must use only the previous seven calendar days."""
+>       assert "cnt_roll_std_7" in feature_columns(feats)
+E       AssertionError: assert 'cnt_roll_std_7' in ['temp', 'atemp', 'hum', 'windspeed', 'dayofweek', 'is_weekend', ...]
+E        +  where ['temp', 'atemp', 'hum', 'windspeed', 'dayofweek', 'is_weekend', ...] = feature_columns(        dteday  instant  season  ...  cnt_lag_1 cnt_lag_7   cnt_roll_7\n0   2011-01-10     10.0  WINTER  ...      822.0    1349.0  1344.000000\n1   2011-01-11     11.0  WINTER  ...     1321.0    1562.0  1340.000000\n2   2011-01-12     12.0  WINTER  ...     1263.0    1600.0  1297.285714\n3   2011-01-13     13.0  WINTER  ...     1162.0    1606.0  1234.714286\n4   2011-01-14     14.0  WINTER  ...     1406.0    1510.0  1206.142857\n..         ...      ...     ...  ...        ...       ...          ...\n709 2012-12-27    727.0  WINTER  ...      441.0    4128.0  1951.571429\n710 2012-12-28    728.0  WINTER  ...     2114.0    3623.0  1663.857143\n711 2012-12-29    729.0  WINTER  ...     3095.0    1749.0  1588.428571\n712 2012-12-30    730.0  WINTER  ...     1341.0    1787.0  1530.142857\n713 2012-12-31    731.0  WINTER  ...     1796.0     920.0  1531.428571\n\n[714 rows x 28 columns])
+
+tests/test_leakage.py:71: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_leakage.py::test_rolling_std_excludes_today - AssertionErro...
+======================= 1 failed, 7 deselected in 0.30s ========================
+```

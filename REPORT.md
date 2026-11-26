@@ -46,9 +46,9 @@ On validation (182 days), ridge scored R² 0.7224 and MAE 700.4 against persiste
 
 ## Attribution
 
-This work was AI-assisted and human-directed. I specified each experiment, reviewed and approved the agent's changes, verified results, and made the methodological decisions. Claude Code, running the models below, generated the implementation.
-
 **Models used.** The local `qwen3.5:9b` model (a 7.6 GB download), run through Claude Code as `bikeshare-coder` with a 65,536-token context window (`model/Modelfile`), was used for the tutorial and Exercise 1. I switched to a hosted Claude model around the beginning of Exercise 2 because local inference was excessively slow. Commits from `fae388c` onward identify Claude Sonnet 5.5 in their co-author trailers, and the self-audit was run with `AUDIT_MODEL=claude-sonnet-5-5`. I cannot establish a more precise switch point from the repository.
+
+This work was AI-assisted and human-directed. I specified each experiment, reviewed and approved the agent's changes, verified results, and made the methodological decisions. Claude Code, running the models described above, generated the implementation.
 
 **AI-generated contributions.** Claude Code implemented `cnt_roll_std_7` and generated the subsequent tests and code changes: the seeded-fault edits and repairs; the weather-validation, raw-column contract and lag-difference tests; `LagDifferenceRegressor` and its `--delta-hgb` flags; the `/seed-fault` skill; and drafts of the documentation, including this report. The original failing test for `cnt_roll_std_7` (commit `6ca2159`) I entered manually, with ChatGPT's guidance. I did not manually write the agent-generated code.
 
