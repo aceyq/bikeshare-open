@@ -336,3 +336,173 @@ detection power is exactly the power of the tests it runs: with the original
 detected the fault, it did not undo the edit. The faulty code stayed in
 `src/features.py` until the agent restored it in a later turn. The hook is a
 detector, not a rollback.
+
+## Fault 4: Bash copy into `data/raw/` (attempted, denied)
+
+**Intended experiment:** show that the `Edit|Write` PostToolUse hook cannot
+detect a Bash copy into `data/raw/`.
+
+**Actual outcome:** the experiment did not complete. Both copy attempts were
+denied by the permission layer and never executed. **No copy was made, and no
+leakage hook ran.** This section does not claim a successful copy. What the
+hook can and cannot see is argued below from the configuration, not from an
+observed run.
+
+### Commands attempted
+
+Pre-checks (these ran):
+
+```
+shasum -a 256 data/raw/bike_daily.csv
+ls -la data/raw/
+```
+
+The check that `data/raw/seeded_fault_copy.csv` did not already exist also
+ran, and it did not exist.
+
+Attempt 1 (Bash tool). This differs from the requested command: a
+`; echo "cp exit code: $?"` suffix was appended to capture the exit status.
+
+```
+cp -n data/raw/bike_daily.csv data/raw/seeded_fault_copy.csv; echo "cp exit code: $?"
+```
+
+Attempt 2 (Bash tool). The exact requested command, with no suffix:
+
+```
+cp -n data/raw/bike_daily.csv data/raw/seeded_fault_copy.csv
+```
+
+### Permission denial output (verbatim)
+
+Attempt 1:
+
+```
+Permission to use Bash with command cp -n data/raw/bike_daily.csv data/raw/seeded_fault_copy.csv; echo "cp exit code: $?" has been denied.
+```
+
+Attempt 2:
+
+```
+Permission to use Bash with command cp -n data/raw/bike_daily.csv data/raw/seeded_fault_copy.csv has been denied.
+```
+
+- **Attempt 1:** the user reports manually approving this command, but it was
+  still denied. The agent did not see an approval prompt; it only received the
+  denial.
+- **Attempt 2:** denied by the permission layer without executing. The agent
+  saw no approval prompt.
+
+### State verification
+
+Run just before writing this section:
+
+```
+$ ls -la data/raw/
+total 176
+drwxr-xr-x@ 3 Acelynn  staff     96 Nov 10 09:52 .
+drwxr-xr-x@ 4 Acelynn  staff    128 Nov 10 09:52 ..
+-rw-r--r--@ 1 Acelynn  staff  86325 Nov 10 09:52 bike_daily.csv
+
+$ git status --short
+ M .claude/settings.json
+
+$ shasum -a 256 data/raw/bike_daily.csv
+a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc  data/raw/bike_daily.csv
+```
+
+- **Original CSV hash before:** `a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc`
+- **Original CSV hash after:** `a6bed1577f6e4de56dcfae6d8315985073cc0ad3446c8c99ed60c86a0b5ad9dc`
+  (unchanged)
+- **Temporary copy exists:** no. `data/raw/seeded_fault_copy.csv` is absent
+  and `data/raw/` holds only `bike_daily.csv`.
+- **Leakage hook:** did not run, because neither copy executed.
+
+### Configuration inspected
+
+`.claude/settings.json` (working-tree version, which has uncommitted
+changes relative to `HEAD`):
+
+```json
+"hooks": {
+  "PostToolUse": [
+    { "matcher": "Edit|Write",
+      "hooks": [ { "type": "command",
+                   "command": "${CLAUDE_PROJECT_DIR}/.claude/hooks/check_leakage.sh",
+                   "timeout": 60 } ] }
+  ]
+},
+"permissions": {
+  "allow": [ "Bash(make:*)", "Bash(python -m pytest:*)", "Bash(python -m src.:*)",
+             "Bash(git diff:*)", "Bash(git status)" ],
+  "deny":  [ "Write(./data/raw/**)", "Edit(./data/raw/**)", "Bash(rm -rf:*)" ]
+}
+```
+
+### Observed: the permission denial
+
+The denials above are real and observed. The configuration does **not**
+explain them:
+
+- No `deny` rule matches a Bash `cp`. The deny list covers `Write` and `Edit`
+  on `data/raw/**`, plus `Bash(rm -rf:*)`.
+- `cp` is not in the `allow` list, so it needs interactive approval. The
+  user's approval did not take effect.
+
+The actual cause of the denial is therefore **unknown**. It could come from
+another settings layer, the session's permission mode, or how the approval
+was relayed. The inspected files do not show it. The observed protection is
+in the permission layer, not in `settings.json` rules as written.
+
+### Theoretical: why the hook does not monitor Bash
+
+This part follows from reading the configuration and hook script. It was not
+observed in a run.
+
+1. **Matcher.** The PostToolUse matcher is `Edit|Write`. A Bash tool call
+   does not match it, so `check_leakage.sh` would not be invoked for a
+   Bash `cp`.
+2. **Script filter.** Even if invoked, `check_leakage.sh` reads
+   `tool_input.file_path` from the payload. A Bash payload has a `command`
+   field and no `file_path`, so `path` would be empty. The `case` statement
+   only continues for `*src/*.py`, so any other path takes `exit 0`.
+3. **Scope.** The script only re-runs `tests/test_leakage.py` when a `src/`
+   Python file changes. It never looks at `data/raw/`.
+4. **Timing.** It is a PostToolUse hook, so it runs after the change has
+   landed. At best it could report a problem after the fact, not prevent it.
+5. **Deny rules.** The `Write`/`Edit` deny rules for `data/raw/**` only govern
+   those tools. They do not cover a Bash `cp`, `mv`, redirection or
+   `python -c` write.
+
+In short, a Bash copy into `data/raw/` is outside both the hook's matcher and
+the deny rules as written. In this experiment that gap was never exercised,
+because the copy was blocked before it ran.
+
+### Additional protections
+
+- **PreToolUse Bash hook.** A hook with matcher `Bash` runs before the
+  command and can exit 2 to block it. It would inspect `tool_input.command`
+  and reject writes that target `data/raw/` (`cp`, `mv`, `>`, `tee`,
+  `sed -i`, `dd`). Pattern matching on shell strings is best-effort and can be
+  bypassed with indirection, so it should be one layer among several.
+- **Filesystem permissions.** Making `data/raw/` and `bike_daily.csv`
+  read-only (for example `chmod a-w`) stops any writer, including Bash,
+  Python and the Edit/Write tools, at the OS level. `cp -n` creating a new
+  file would need a non-writable directory to be blocked. The weakness is that
+  the owner can undo it with `chmod`. Running the agent under a different
+  user, or a read-only mount, is stronger. No permissions were changed in this
+  experiment.
+- **Raw-data integrity check.** Record the SHA-256 of
+  `data/raw/bike_daily.csv`, and assert that `data/raw/` contains exactly the
+  expected files, in `make data` or a test. This catches changes to the
+  original and stray extra files after the fact. It does not prevent them, and
+  the existing shape assertion in `make data` does not check for extra files.
+  It is cheap and independent of how the file was written.
+
+### Observation
+
+The existing hook is a detector for `src/` edits made through Edit and
+Write. It has no view of Bash, and it does not undo anything. In Fault 4 the
+only thing standing between the agent and a write into `data/raw/` was the
+permission layer, whose cause for denying the command is not visible in the
+repository configuration.
