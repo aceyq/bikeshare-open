@@ -81,6 +81,15 @@ it is immutable (writes are denied in `.claude/settings.json`).
 
 `python -m src.leakage_demo` reproduces the R^2 = 1.000 result from the lesson.
 
+## Forecasting assumption
+
+The weather features (`temp`, `atemp`, `hum`, `windspeed`, `weather_severity`)
+are the observed same-day values. The evaluation uses them as a proxy for the
+weather information that would be available at prediction time. In real use
+that information would be a weather forecast, which is less accurate than the
+observation, so real-world performance may differ from the reported results.
+This is a limit on how the results can be interpreted, not target leakage.
+
 ## Layout
 
 See `CLAUDE.md` for the standing rules and `src/config.py` for every constant.
