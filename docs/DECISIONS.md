@@ -2,6 +2,7 @@
 
 One line per methodological decision: what you chose, why, and what it changed.
 Agents append here via the `/new-feature` skill; you append here by hand.
+Entries from 2026-11-25 onward were drafted by Claude Code at my direction. I reviewed the proposed changes and experimental outputs throughout the workflow.
 
 - Exclude `casual`, `registered`: they sum to `cnt` exactly. Leaky model R^2 1.000 -> honest ridge 0.583.
 - Exclude `cnt_2d_bfr`: a shipped 2-day lag we cannot test the alignment of. Build our own lags instead.
@@ -26,7 +27,7 @@ Agents append here via the `/new-feature` skill; you append here by hand.
 
 ## Step 3 — Naive Modeling and Target Leakage (2026-11-24)
 
-- Submitted the naive modeling prompt in a fresh Claude session without additional modeling instructions.
+- Submitted the naive modeling prompt in a fresh Claude Code session (local `qwen3.5:9b`) without additional modeling instructions.
 - Unlike the tutorial example, the agent followed the existing project pipeline and respected the standing leakage and temporal split constraints.
 - Agent reported test R^2 scores of -2.14 for the mean baseline, 0.51 for persistence, 0.58 for ridge, and -0.50 for histogram gradient boosting.
 - Persistence achieved a lower test MAE (840.1) than ridge (947.1), despite ridge having a higher R^2.
@@ -39,7 +40,7 @@ Agents append here via the `/new-feature` skill; you append here by hand.
 
 ## Step 4 — Rolling Standard Deviation (2026-11-24)
 
-- Added cnt_roll_std_7 using shift(1) before rolling(7). All seven previous daily counts are available at prediction time. Existing seven-day warmup is sufficient. Validation R^2 improved for ridge from 0.6475 to 0.7224 (+0.0749) but declined for hgb from 0.2185 to 0.0977 (-0.1208). Retain the feature based on ridge exceeding the 0.01 improvement threshold, while documenting the decline in hgb.
+- Added `cnt_roll_std_7` using `shift(1)` before `rolling(7)`, implemented by Claude Code against the failing test I entered manually. All seven previous daily counts are available at prediction time. Existing seven-day warmup is sufficient. Validation R^2 improved for ridge from 0.6475 to 0.7224 (+0.0749) but declined for hgb from 0.2185 to 0.0977 (-0.1208). Decision: I retained the feature because ridge exceeded the 0.01 improvement threshold; the decline for hgb is documented.
 
 ## Process updates (2026-11-25)
 
@@ -55,7 +56,7 @@ Agents append here via the `/new-feature` skill; you append here by hand.
 - Actual validation results (`python -m src.train --delta-hgb --valid-only`, 182 validation days, saved in `reports/experiments/hgb_delta_valid.json`): hgb_delta R^2 0.5642 / MAE 885.8; hgb 0.0977 / 1381.6; persistence 0.4507 / 900.6; ridge 0.7224 / 700.4; mean baseline -0.9318 / 2002.2. hgb_delta vs hgb: R^2 +0.4665, MAE -495.8. vs persistence: R^2 +0.1135, MAE -14.8. vs ridge: R^2 -0.1582, MAE +185.4.
 - Criteria check: both criteria are met. (1) 885.8 < 900.6. (2) +0.4665 > 0.01.
 - Decision: adopt `hgb_delta` as an experimental model for Exercise 4. Ridge remains the strongest model on validation and is retained as the best model; `hgb_delta` is not competitive with it (lower R^2 by 0.158, higher MAE by 185).
-- Rationale: differencing removes the 2011-to-2012 growth trend from the target, so the booster no longer has to predict counts above its 2011 training range; the lag carries the current level. This turns the booster from the worst model on validation into one that is slightly better than persistence.
+- Rationale: differencing is intended to reduce dependence on the absolute demand level, so the booster models the change from yesterday and the lag carries the current level. On validation, hgb's R^2 rose from 0.0977 to 0.5642 and its MAE fell below persistence's (885.8 vs 900.6). Whether the differenced target is free of trend was not checked.
 - Caveat: the MAE improvement over persistence is small (14.8, about 1.6%). Statistical significance has not been established, and no interval was computed on 182 days. The larger R^2 gain over `hgb` is the stronger evidence. No tuning or iteration was done on validation: one run with fixed settings.
 - Test protocol: the test set is scored once with `python -m src.train --delta-hgb --final-test`, after this entry. Results are saved separately in `reports/experiments/hgb_delta_test.json`; `reports/metrics.json` is not overwritten. The model will not be tuned or changed based on test results.
 
@@ -72,9 +73,9 @@ The original validation-based adoption decision above is unchanged. This entry r
 | hgb_delta | 0.4761 | 990.5 |
 
 - hgb_delta vs hgb: R^2 +1.1720, MAE -1117.9. vs persistence: R^2 -0.0338, MAE +150.4. vs ridge: R^2 -0.1595, MAE +150.2.
-- Interpretation: differencing the target substantially improved the booster. Test R^2 went from -0.6959 to 0.4761 and MAE fell by about 1118, consistent with the explanation that a tree cannot predict counts above its 2011 training range while the difference target removes that growth trend.
+- Interpretation: differencing the target substantially improved the booster. Test R^2 went from -0.6959 to 0.4761 and MAE fell by about 1118, consistent with the explanation that a tree cannot predict far above its 2011 training range and that differencing reduces dependence on the absolute level; no diagnostic isolated the cause.
 - It did not outperform persistence on the held-out test set. It was worse on both R^2 (0.4761 vs 0.5099) and MAE (990.5 vs 840.1). The validation MAE edge over persistence (14.8, about 1.6%) did not hold on test, which fits the caveat recorded with the adoption decision that its significance was not established. Under the pre-set criteria, the first criterion (beat persistence on MAE) was met on validation and not met on test.
-- Ridge remains the strongest model on validation and by test R^2. Its test MAE (840.3) is essentially tied with persistence (840.1); its advantage on test is in R^2.
+- Ridge remains the strongest model on validation and by test R^2. Its test MAE (840.3) is nearly identical to persistence (840.1); its advantage on test is in R^2.
 - Decision: retain `hgb_delta` as an optional experimental model behind `--delta-hgb`, not a replacement for the default models. The default pipeline, `MODELS` and `reports/metrics.json` are unchanged. `hgb_delta` should not be presented as an improvement over persistence.
 - Consistency check: the untransformed models in `reports/metrics.json` (baseline_mean, baseline_persistence, ridge, hgb) match the same models in `reports/experiments/hgb_delta_valid.json` and `hgb_delta_test.json` exactly, for R^2 and MAE on both splits, with the same feature list and split sizes (n_features 15, n_train 348, n_valid 182, n_test 184). `reports/metrics.json` has no `hgb_delta` entry, as intended.
 - Repository: `.gitignore` no longer ignores `reports/` or `audit.jsonl`, so `reports/metrics.json`, `reports/experiments/` and the future `reports/audit.jsonl` can be tracked. Exclusions for processed data, virtual environments and caches are kept.
@@ -90,7 +91,7 @@ The original validation-based adoption decision above is unchanged. This entry r
 ## Automated self-audit (2026-11-25)
 
 - Ran the Agent SDK batch auditor (`agent/audit.py`) on this repository, after Exercises 4 and 5 and the final report. The first attempt, `python agent/audit.py . --out reports/audit.jsonl`, failed: the script defaults to the local `bikeshare-coder` model (`AUDIT_MODEL`), which only exists behind Ollama, and the Ollama configuration had been removed from the working-tree `.claude/settings.json` when switching to a hosted model. The error was "There's an issue with the selected model (bikeshare-coder). It may not exist or you may not have access to it."
-- The successful command was `AUDIT_MODEL=claude-sonnet-5-5 python agent/audit.py . --out reports/audit.jsonl`, which printed `audited 1 repos; 0 flagged -> reports/audit.jsonl`. The audit was run once; the saved file is `reports/audit.jsonl`.
+- The successful command was `AUDIT_MODEL=claude-sonnet-5-5 python agent/audit.py . --out reports/audit.jsonl`, which printed `audited 1 repos; 0 flagged -> reports/audit.jsonl`. The successful audit was run once, and I ran both commands myself; the saved file is `reports/audit.jsonl`.
 - Final verdict: `leakage: none`, `temporal_ok: true`, `baseline_reported: true`, `reproducible: true`, `confidence: high`.
 - Finding 1 (`src/features.py`, line 55): same-day weather (`temp`, `atemp`, `hum`, `windspeed`, `weather_severity`) is measured on the day being predicted, so it is only legitimate if a weather forecast is available at prediction time. The audit states this is not target leakage (its identity check returned clean on all 15 features) but an assumption about what is known at prediction time. Response: recorded as a forecasting assumption in `README.md`; real-world performance may differ when forecasts replace observed weather.
 - Finding 2 (`.claude/settings.json`, line 1): the working tree has an uncommitted edit that removes the local Ollama model and env configuration. The audit says this does not affect the pipeline or the metrics. Response: intentional (switch to a hosted model); the file is deliberately not committed.

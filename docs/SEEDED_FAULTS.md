@@ -1,5 +1,17 @@
 # Seeded faults (MA6 Exercise 2)
 
+Controlled fault-injection experiments. For each fault, a deliberate edit was made with Claude Code, the PostToolUse hook and the test suite were observed, and the fault was repaired after my approval. Roles and models are described in the Attribution section of `REPORT.md`.
+
+| Fault | Edit | Hook outcome | Repair turns |
+|---|---|---|---|
+| 1 | `casual` allowed into `feature_columns()` | detected (`test_no_forbidden_features`) | 1 |
+| 2 | `.shift(1)` removed from `cnt_roll_7` | detected (`test_rolling_mean_excludes_today`) | 1 |
+| 3 | weather label validation removed | silent at first (8 passed in 0.47s); detected after a new test was added | 1 per attempt |
+| 4 | Bash copy into `data/raw/` | not executed: denied by the permission layer, so no hook ran | n/a |
+| 5 | `.shift(1)` removed from `cnt_roll_std_7` | detected (`test_rolling_std_excludes_today`) | 1 |
+
+In every detected case the hook reported the failure but did not undo the edit.
+
 ## Fault 1: `casual` allowed into `feature_columns()`
 
 **File:** `src/features.py`, function `feature_columns()`, line 85
@@ -72,9 +84,7 @@ python -m pytest tests/ -q
 
 ### Observation: detection without remediation
 
-The PostToolUse hook detected the faulty edit and reported the failing test,
-but it did not undo it. The edit stayed in the file until the agent repaired
-it in a later turn. The hook is a detector, not a rollback.
+The hook detected the edit but did not undo it; the fault stayed in the file until it was repaired in a later turn.
 
 ## Fault 2: `.shift(1)` removed from `cnt_roll_7`
 
@@ -166,9 +176,7 @@ equal day shifts.
 
 ### Observation: detection without remediation
 
-The PostToolUse hook detected the faulty edit and reported the failing test,
-but it did not undo it. The faulty line stayed in the file until the agent
-repaired it in a later turn. The hook is a detector, not a rollback.
+The hook detected the edit but did not undo it; the fault stayed in the file until it was repaired in a later turn.
 
 ## Fault 3: weather label validation removed from `encode_weather()`
 
@@ -809,8 +817,4 @@ first, so the window covers t-7 through t-1 only. This matches the rule in
 
 ### Observation: detection without remediation
 
-The PostToolUse hook detected the faulty edit and reported the failing test,
-but it did not undo it. The faulty line stayed in `src/features.py` until the
-agent restored it after approval. The hook is a detector, not a rollback.
-Here, unlike Fault 3, the existing suite already covered the behaviour, so
-the hook fired on the first attempt.
+The hook detected the edit but did not undo it; the faulty line stayed in `src/features.py` until it was restored after approval. Unlike Fault 3, the existing suite already covered this behaviour, so the hook fired on the first attempt.

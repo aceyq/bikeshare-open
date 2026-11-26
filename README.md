@@ -8,6 +8,8 @@ The agent is Claude Code driving an **open-weight model running on your own
 machine** through Ollama. No Anthropic account, subscription, or API key is
 needed. Nothing leaves your laptop.
 
+Project note: the setup below is the starter's default (local model). This project used the local `qwen3.5:9b` model for the tutorial and Exercise 1 and a hosted Claude model from around Exercise 2; see the Attribution section of `REPORT.md`. With a hosted model, repository content is sent to the model provider, so "nothing leaves your laptop" applies only to the local configuration.
+
 ## Setup
 
     # 1. Ollama (the local model server)   https://ollama.com/download
@@ -22,7 +24,7 @@ needed. Nothing leaves your laptop.
     make model          # pulls the base model, builds `bikeshare-coder` with a 64k context
     make check-model    # confirms Claude Code can reach it and that tool calls work
     make all            # data -> features -> train, writes reports/metrics.json
-    make test           # 14 tests
+    make test           # 23 tests
 
     # 4. Start the agent, from the repo root
     claude
@@ -94,7 +96,7 @@ This is a limit on how the results can be interpreted, not target leakage.
 
 See `CLAUDE.md` for the standing rules and `src/config.py` for every constant.
 `.claude/` holds the hook, permissions, reviewer subagent and `new-feature`
-skill the lesson builds in Steps 7-8. `model/` holds the Modelfile and the
+skill the lesson builds in Steps 7-8, plus the `seed-fault` skill added in Exercise 2. `model/` holds the Modelfile and the
 readiness check. `agent/audit.py` is the Agent SDK batch auditor from Part 4;
-it uses the same local endpoint (`AUDIT_MODEL` overrides the model). Record
+by default it uses the local endpoint and `bikeshare-coder`; set `AUDIT_MODEL` (and `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` if needed) to use a hosted model, as in the self-audit recorded in `docs/DECISIONS.md`. Record
 methodological decisions in `docs/DECISIONS.md`.
